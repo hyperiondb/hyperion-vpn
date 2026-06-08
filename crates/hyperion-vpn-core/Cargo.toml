@@ -1,0 +1,21 @@
+[package]
+name = "hyperion-vpn-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+noise-protocol = "=0.2.1"
+noise-rust-crypto = "=0.6.2"
+zeroize = "=1.8.2"
+argon2 = "=0.5.3"
+base64 = "=0.22.1"
+yamux = "=0.13.10"
+tokio-util = { version = "=0.7.18", features = ["compat"] }

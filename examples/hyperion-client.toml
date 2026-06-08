@@ -1,0 +1,36 @@
+admin_static_key_file = "~/.config/hyperion/admin.key"
+
+[knock]
+transport = "udp"
+
+[[server]]
+name = "srvA"
+addr = "203.0.113.10:8443"
+server_pubkey = "BASE64_SRVA_STATIC_PUBKEY"
+key_env = "HYPERION_PSK_SRVA"
+pool_size = 2
+
+[[server]]
+name = "srvB"
+addr = "203.0.113.11:8443"
+server_pubkey = "BASE64_SRVB_STATIC_PUBKEY"
+key_env = "HYPERION_PSK_SRVB"
+pool_size = 2
+
+[[forward]]
+local = "127.0.0.1:2201"
+server = "srvA"
+remote_host = "127.0.0.1"
+remote_port = 22
+
+[[forward]]
+local = "127.0.0.1:5432"
+server = "srvA"
+remote_host = "127.0.0.1"
+remote_port = 5432
+
+[[forward]]
+local = "127.0.0.1:2202"
+server = "srvB"
+remote_host = "127.0.0.1"
+remote_port = 22

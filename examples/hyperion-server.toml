@@ -1,0 +1,29 @@
+listen = "0.0.0.0:8443"
+
+[key]
+source = "env"
+env_var = "HYPERION_PSK"
+
+[identity]
+static_key_file = "/etc/hyperion/server.key"
+admin_pubkeys = [
+    "BASE64_ADMIN_STATIC_PUBKEY",
+]
+
+[knock]
+listen_mode = "af_packet"
+replay_window_secs = 30
+open_ttl_secs = 30
+
+[firewall]
+backend = "nftables"
+table = "hyperion"
+
+[egress]
+allow = ["127.0.0.1:22", "127.0.0.1:5432"]
+
+[limits]
+max_conns_per_ip = 8
+handshake_timeout_ms = 3000
+max_streams_per_conn = 256
+knock_rate_per_ip_per_min = 10
