@@ -11,7 +11,6 @@ use crate::{Error, Result};
 pub type MuxStream = Compat<YamuxStream>;
 
 const OPEN_BACKLOG: usize = 64;
-const INBOUND_BACKLOG: usize = 128;
 
 type OpenReply = oneshot::Sender<yamux::Result<YamuxStream>>;
 
@@ -43,7 +42,7 @@ impl MuxControl {
 }
 
 pub struct MuxAcceptor {
-    inbound: mpsc::Receiver<YamuxStream>,
+    inbound: mpsc::UnboundedReceiver<YamuxStream>,
 }
 
 impl MuxAcceptor {
@@ -58,7 +57,7 @@ where
 {
     let conn = Connection::new(socket.compat(), cfg, Mode::Client);
     let (open_tx, open_rx) = mpsc::channel(OPEN_BACKLOG);
-    let (inbound_tx, _inbound_rx) = mpsc::channel(1);
+    let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
     (
         MuxControl { open: open_tx },
         run(conn, Some(open_rx), inbound_tx),
@@ -70,7 +69,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let conn = Connection::new(socket.compat(), cfg, Mode::Server);
-    let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_BACKLOG);
+    let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
     (
         MuxAcceptor {
             inbound: inbound_rx,
@@ -82,7 +81,7 @@ where
 async fn run<T>(
     mut conn: Connection<Compat<T>>,
     mut open_rx: Option<mpsc::Receiver<OpenReply>>,
-    inbound_tx: mpsc::Sender<YamuxStream>,
+    inbound_tx: mpsc::UnboundedSender<YamuxStream>,
 ) -> Result<()>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -103,7 +102,7 @@ where
 
         match conn.poll_next_inbound(cx) {
             Poll::Ready(Some(Ok(stream))) => {
-                let _ = inbound_tx.try_send(stream);
+                let _ = inbound_tx.send(stream);
                 progress = true;
             }
             Poll::Ready(Some(Err(e))) => {
@@ -137,8 +136,8 @@ where
 mod tests {
     use super::*;
     use crate::protocol::{
-        read_connect_request, read_connect_response, write_connect_request,
-        write_connect_response, ConnectRequest, ConnectResponse,
+        read_connect_request, read_connect_response, write_connect_request, write_connect_response,
+        ConnectRequest, ConnectResponse,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -159,7 +158,9 @@ mod tests {
             let mut s = acceptor.accept().await.unwrap();
             let req = read_connect_request(&mut s).await.unwrap();
             assert_eq!(req, ConnectRequest { port: 22 });
-            write_connect_response(&mut s, ConnectResponse::Ok).await.unwrap();
+            write_connect_response(&mut s, ConnectResponse::Ok)
+                .await
+                .unwrap();
             let mut buf = [0u8; 5];
             s.read_exact(&mut buf).await.unwrap();
             s.write_all(&buf).await.unwrap();

@@ -24,6 +24,8 @@ const BACKOFF_MAX: Duration = Duration::from_secs(15);
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(20);
 const OPEN_GRACE_ATTEMPTS: usize = 20;
 const OPEN_GRACE_DELAY: Duration = Duration::from_millis(100);
+const CONNECT_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Default Linux firewall mark set on the tunnel's own sockets so policy routing can
 /// exclude them from the TUN device (the WireGuard-style bypass). See `print-routes`.
@@ -57,10 +59,11 @@ fn apply_mark<S>(_sock: &S, _fwmark: Option<u32>) {}
 pub async fn send_knock(
     target: SocketAddr,
     psk: &Psk,
+    server_pub: &PublicKey,
     tunnel_port: u16,
     fwmark: Option<u32>,
 ) -> Result<()> {
-    let packet = knock::seal(psk, tunnel_port);
+    let packet = knock::seal(psk, server_pub, tunnel_port);
     let bind: SocketAddr = if target.is_ipv4() {
         ([0, 0, 0, 0], 0).into()
     } else {
@@ -102,7 +105,14 @@ async fn connect_tcp(addr: SocketAddr, knocked: bool, fwmark: Option<u32>) -> Re
 pub async fn dial(addr: SocketAddr, params: &TunnelParams) -> Result<NoiseStream<TcpStream>> {
     if let Some(k) = &params.knock {
         let target = SocketAddr::new(addr.ip(), k.port);
-        send_knock(target, &params.psk, addr.port(), params.fwmark).await?;
+        send_knock(
+            target,
+            &params.psk,
+            &params.server_pubkey,
+            addr.port(),
+            params.fwmark,
+        )
+        .await?;
     }
     let tcp = connect_tcp(addr, params.knock.is_some(), params.fwmark).await?;
     let _ = tcp.set_nodelay(true);
@@ -160,6 +170,18 @@ impl SupervisedPool {
         }
         Err(Error::Protocol("no live tunnel to server".into()))
     }
+
+    pub async fn wait_connected(&self, timeout: Duration) -> bool {
+        let wait = async {
+            loop {
+                if self.live_slots() > 0 {
+                    return;
+                }
+                tokio::time::sleep(OPEN_GRACE_DELAY).await;
+            }
+        };
+        tokio::time::timeout(timeout, wait).await.is_ok()
+    }
 }
 
 fn backoff_jitter() -> Duration {
@@ -189,12 +211,7 @@ async fn supervise(slot: Arc<Slot>, addr: SocketAddr, params: Arc<TunnelParams>)
     }
 }
 
-pub async fn build_pool(
-    addr: SocketAddr,
-    params: TunnelParams,
-    size: usize,
-    connect_timeout: Duration,
-) -> Result<Arc<SupervisedPool>> {
+pub fn build_pool(addr: SocketAddr, params: TunnelParams, size: usize) -> Arc<SupervisedPool> {
     let size = size.max(1);
     let params = Arc::new(params);
     let mut slots = Vec::with_capacity(size);
@@ -206,25 +223,11 @@ pub async fn build_pool(
         slots.push(slot.clone());
         supervisors.push(tokio::spawn(supervise(slot, addr, params.clone())));
     }
-    let pool = Arc::new(SupervisedPool {
+    Arc::new(SupervisedPool {
         slots,
         next: AtomicUsize::new(0),
         supervisors,
-    });
-
-    let pool_for_wait = pool.clone();
-    let wait = async move {
-        loop {
-            if pool_for_wait.live_slots() > 0 {
-                return;
-            }
-            tokio::time::sleep(OPEN_GRACE_DELAY).await;
-        }
-    };
-    match tokio::time::timeout(connect_timeout, wait).await {
-        Ok(()) => Ok(pool),
-        Err(_) => Err(Error::Protocol(format!("timed out connecting to {addr}"))),
-    }
+    })
 }
 
 pub async fn forward_one<L>(mut local: L, pool: Arc<SupervisedPool>, port: u16) -> Result<()>
@@ -232,8 +235,14 @@ where
     L: AsyncRead + AsyncWrite + Unpin,
 {
     let mut stream = pool.open().await?;
-    write_connect_request(&mut stream, &ConnectRequest { port }).await?;
-    match read_connect_response(&mut stream).await? {
+    let exchange = async {
+        write_connect_request(&mut stream, &ConnectRequest { port }).await?;
+        read_connect_response(&mut stream).await
+    };
+    let response = tokio::time::timeout(CONNECT_EXCHANGE_TIMEOUT, exchange)
+        .await
+        .map_err(|_| Error::Protocol(format!("connect to port {port} timed out")))??;
+    match response {
         ConnectResponse::Ok => {
             let _ = copy_bidirectional(&mut local, &mut stream).await;
             Ok(())
@@ -256,8 +265,8 @@ pub async fn run_forward(listener: TcpListener, pool: Arc<SupervisedPool>, port:
                 });
             }
             Err(e) => {
-                tracing::warn!(error = %e, "local accept failed");
-                break;
+                tracing::warn!(error = %e, "local accept failed; retrying");
+                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
             }
         }
     }
@@ -319,9 +328,8 @@ mod tests {
             knock: None,
             fwmark: None,
         };
-        let pool = build_pool(server_addr, params, 2, Duration::from_secs(5))
-            .await
-            .unwrap();
+        let pool = build_pool(server_addr, params, 2);
+        assert!(pool.wait_connected(Duration::from_secs(5)).await);
         assert_eq!(pool.size(), 2);
 
         let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -343,20 +351,26 @@ mod tests {
 
     #[tokio::test]
     async fn udp_knock_send_then_open() {
-        use crate::knock::{open, ReplayGuard, DEFAULT_WINDOW_SECS};
+        use crate::knock::{KnockVerifier, DEFAULT_WINDOW_SECS};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let psk = Psk::from_bytes([6u8; 32]);
+        let server_kp = Keypair::generate();
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = server.local_addr().unwrap();
 
-        send_knock(addr, &psk, 8443, None).await.unwrap();
+        send_knock(addr, &psk, &server_kp.public, 8443, None)
+            .await
+            .unwrap();
 
         let mut buf = vec![0u8; 128];
         let (n, _from) = server.recv_from(&mut buf).await.unwrap();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let mut guard = ReplayGuard::new(DEFAULT_WINDOW_SECS);
-        let k = open(&psk, &buf[..n], now, &mut guard).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut verifier = KnockVerifier::new(&psk, &server_kp.public, DEFAULT_WINDOW_SECS);
+        let k = verifier.open(&buf[..n], now).unwrap();
         assert_eq!(k.tunnel_port, 8443);
     }
 
@@ -437,9 +451,8 @@ mod tests {
             knock: None,
             fwmark: None,
         };
-        let pool = build_pool(addr, params, 1, Duration::from_secs(5))
-            .await
-            .unwrap();
+        let pool = build_pool(addr, params, 1);
+        assert!(pool.wait_connected(Duration::from_secs(5)).await);
 
         let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr = local_listener.local_addr().unwrap();
@@ -471,6 +484,9 @@ mod tests {
             }
         })
         .await;
-        assert!(recovered.is_ok(), "pool did not recover after server restart");
+        assert!(
+            recovered.is_ok(),
+            "pool did not recover after server restart"
+        );
     }
 }

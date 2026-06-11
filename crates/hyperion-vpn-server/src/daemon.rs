@@ -1,10 +1,12 @@
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Context};
+use hyperion_vpn_cli_common as common;
 
 use crate::config;
 use crate::paths;
+
+const PROC_NEEDLE: &str = "hyperion";
 
 pub async fn up(config_path: &str, foreground: bool) -> anyhow::Result<()> {
     if !Path::new(config_path).exists() {
@@ -17,7 +19,7 @@ pub async fn up(config_path: &str, foreground: bool) -> anyhow::Result<()> {
     if summary.admin_count == 0 {
         bail!("no admin pubkeys configured — re-run init with --admin-key");
     }
-    if let Some(pid) = running_pid() {
+    if let Some(pid) = common::running_pid(&paths::pid_file(), PROC_NEEDLE) {
         bail!("hyperion-server is already up (pid {pid}); run `hyperion-server down` first");
     }
 
@@ -26,75 +28,37 @@ pub async fn up(config_path: &str, foreground: bool) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| "HYPERION_PASSPHRASE".into());
     let passphrase = if summary.key_is_passphrase && std::env::var(&pass_var).is_err() {
-        Some(
-            rpassword::prompt_password("hyperion shared passphrase: ")
-                .context("reading passphrase")?,
-        )
+        Some(common::prompt_passphrase("hyperion shared passphrase: ")?)
     } else {
         None
     };
 
     if foreground {
         if let Some(p) = &passphrase {
-            std::env::set_var(&pass_var, p);
+            std::env::set_var(&pass_var, p.as_str());
         }
         return crate::serve::run(config_path).await;
     }
 
     paths::ensure_config_dir().ok();
-    let log_path = paths::log_file();
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("opening log {}", log_path.display()))?;
-    let log_err = log.try_clone()?;
-    let exe = std::env::current_exe().context("locating current executable")?;
-
-    let mut cmd = Command::new(exe);
-    cmd.arg("run").arg("--config").arg(config_path);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::from(log));
-    cmd.stderr(std::process::Stdio::from(log_err));
-    if let Some(p) = &passphrase {
-        cmd.env(&pass_var, p);
-    }
-    detach(&mut cmd);
-
-    let child = cmd.spawn().context("spawning background daemon")?;
-    let pid = child.id();
-    write_pid(pid)?;
-
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    if !is_alive(pid) {
-        let _ = std::fs::remove_file(paths::pid_file());
-        bail!(
-            "daemon exited immediately — check the log:\n  {}",
-            log_path.display()
-        );
-    }
+    let pid = common::spawn_daemon(
+        &["run", "--config", config_path],
+        &paths::pid_file(),
+        &paths::log_file(),
+        passphrase.as_ref().map(|p| (pass_var.as_str(), p.as_str())),
+    )
+    .await?;
 
     print_up_banner(&summary, pid);
     Ok(())
 }
 
 pub fn down() -> anyhow::Result<()> {
-    let Some(pid) = read_pid() else {
-        println!("hyperion-server is not running (no pid file)");
-        return Ok(());
-    };
-    if is_alive(pid) {
-        kill(pid)?;
-        println!("hyperion-server down (stopped pid {pid})");
-    } else {
-        println!("hyperion-server was not running (cleaned up stale pid {pid})");
-    }
-    let _ = std::fs::remove_file(paths::pid_file());
-    Ok(())
+    common::stop_daemon(&paths::pid_file(), PROC_NEEDLE, "hyperion-server")
 }
 
 pub fn status(config_path: &str) -> anyhow::Result<()> {
-    match running_pid() {
+    match common::running_pid(&paths::pid_file(), PROC_NEEDLE) {
         Some(pid) => println!("hyperion-server: UP (pid {pid})"),
         None => println!("hyperion-server: down"),
     }
@@ -153,104 +117,9 @@ fn print_up_banner(summary: &config::Summary, pid: u32) {
             "\nNOTE: SPA is on, but the firewall is NOT applied automatically.\n\
              Apply it deliberately (you can lock yourself out):\n  \
              hyperion-server print-firewall --tunnel-port {} | sudo nft -f -",
-            port_of(&summary.listen)
+            common::port_of(&summary.listen)
         );
     }
     println!("\nstop with: hyperion-server down");
     println!("logs:      {}", paths::log_file().display());
-}
-
-fn port_of(listen: &str) -> String {
-    listen
-        .rsplit(':')
-        .next()
-        .filter(|p| p.parse::<u16>().is_ok())
-        .unwrap_or("8443")
-        .to_string()
-}
-
-fn running_pid() -> Option<u32> {
-    let pid = read_pid()?;
-    if is_alive(pid) {
-        Some(pid)
-    } else {
-        None
-    }
-}
-
-fn read_pid() -> Option<u32> {
-    std::fs::read_to_string(paths::pid_file())
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
-}
-
-fn write_pid(pid: u32) -> anyhow::Result<()> {
-    std::fs::write(paths::pid_file(), pid.to_string())
-        .with_context(|| format!("writing pid file {}", paths::pid_file().display()))
-}
-
-#[cfg(windows)]
-fn detach(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-}
-
-#[cfg(unix)]
-fn detach(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0);
-}
-
-#[cfg(windows)]
-fn is_alive(pid: u32) -> bool {
-    match Command::new("tasklist")
-        .args(["/NH", "/FI", &format!("PID eq {pid}")])
-        .output()
-    {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
-        Err(_) => true,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn is_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true)
-}
-
-#[cfg(windows)]
-fn kill(pid: u32) -> anyhow::Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status()
-        .context("running taskkill")?;
-    if !status.success() {
-        bail!("taskkill failed for pid {pid}");
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn kill(pid: u32) -> anyhow::Result<()> {
-    let status = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()
-        .context("running kill")?;
-    if !status.success() {
-        bail!("kill failed for pid {pid}");
-    }
-    Ok(())
 }

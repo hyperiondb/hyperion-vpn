@@ -49,14 +49,17 @@ config needed (just servers). Remaining:
 
 ## Phase 5 — Single Packet Authorization (Linux server gate)
 Implemented + cross-checked for Linux (`cargo check --target x86_64-unknown-linux-gnu`);
-knock crypto / packet parse / nft arg-building unit-tested cross-platform. Remaining:
+knock crypto / packet parse / nft arg-building unit-tested cross-platform. Also done:
+knock bound to the target server's static pubkey (AEAD AAD — cross-server replay dead);
+kernel BPF filter on the sniffer socket (only knock-port UDP reaches userspace);
+per-source-IP allow cooldown (caps `nft` churn from repeated valid knocks). Remaining:
 - [ ] **Runtime verification on a real Linux host** (root): `nft -f` the base ruleset
       (`hyperion-server print-firewall`), enable `[knock]`, confirm: scanner sees
       all-filtered, a valid knock opens tcp/<port> for the source IP only, the set
       element expires, established conns survive, replay/stale/forged knocks are dropped.
 - [ ] Privilege model: acquire `CAP_NET_RAW` + `CAP_NET_ADMIN`, drop the rest, run as a
       dedicated unprivileged user (+ systemd `AmbientCapabilities`).
-- [ ] Per-source-IP knock rate limit; startup reconcile of stale set elements.
+- [ ] Per-source-IP connection rate limit; startup reconcile of stale set elements.
 - [ ] Optional: single crafted-TCP-packet knock variant; NFLOG/iptables fallbacks.
 
 ## Phase 6 — Reliability
@@ -65,7 +68,8 @@ Done: supervised self-healing pool (re-knock + backoff/jitter on drop), TCP keep
 survive flaps + open() grace, owned mux driver (no task leak), server-restart reconnect
 test. Remaining:
 - [ ] App-level keepalive ping/pong for faster liveness than TCP keepalive's idle timer.
-- [ ] Audit every await for an explicit timeout (handshake + connect covered).
+- [ ] Audit every await for an explicit timeout (handshake + connect + per-stream
+      connect-request/response exchange covered).
 - [ ] Extended chaos on Linux: `netem` packet loss + client-IP flip mid-transfer.
 
 ## Phase 7 — Security hardening

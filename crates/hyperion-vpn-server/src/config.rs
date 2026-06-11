@@ -1,15 +1,17 @@
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
+use hyperion_vpn_cli_common as common;
+use hyperion_vpn_cli_common::Zeroizing;
 use hyperion_vpn_core::keys::{Keypair, PublicKey, SecretKey};
 use hyperion_vpn_core::psk::Psk;
 use hyperion_vpn_core::server::{Egress, ServerConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     listen: String,
     key: KeySource,
@@ -25,6 +27,7 @@ struct FileConfig {
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 struct KnockSection {
     #[serde(default)]
     enabled: bool,
@@ -35,6 +38,7 @@ struct KnockSection {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct FirewallSection {
     #[serde(default = "default_table")]
     table: String,
@@ -67,6 +71,7 @@ fn default_ttl() -> u64 {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct KeySource {
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +87,7 @@ struct KeySource {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Identity {
     static_key_file: String,
     #[serde(default)]
@@ -89,12 +95,14 @@ struct Identity {
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 struct EgressSection {
     #[serde(default)]
     allow: Vec<u16>,
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Limits {
     #[serde(default = "default_handshake_ms")]
     handshake_timeout_ms: u64,
@@ -121,7 +129,9 @@ pub struct LoadedConfig {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct KnockRuntime {
     pub knock_port: u16,
+    pub tunnel_port: u16,
     pub psk: Psk,
+    pub server_pub: PublicKey,
     pub window_secs: u64,
     pub table: String,
     pub set: String,
@@ -185,7 +195,7 @@ pub fn init_config(
     PublicKey::from_base64(admin_key).context("invalid admin pubkey")?;
 
     let keypair = Keypair::generate();
-    write_secret(&key_path, &keypair.secret.to_base64())?;
+    common::write_secret(&key_path, &keypair.secret.to_base64())?;
 
     let file = FileConfig {
         listen: listen.to_string(),
@@ -219,27 +229,6 @@ pub fn init_config(
     Ok((path, keypair.public.to_base64()))
 }
 
-fn write_secret(path: &Path, contents: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
-    file.write_all(contents.as_bytes())?;
-    file.write_all(b"\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
 pub fn load(path: &str) -> anyhow::Result<LoadedConfig> {
     let file = read_file(path)?;
 
@@ -250,9 +239,13 @@ pub fn load(path: &str) -> anyhow::Result<LoadedConfig> {
 
     let psk = load_psk(&file.key)?;
 
-    let secret_b64 = std::fs::read_to_string(&file.identity.static_key_file)
-        .with_context(|| format!("reading static key {}", file.identity.static_key_file))?;
+    let key_path = common::expand_home(&file.identity.static_key_file);
+    let secret_b64 = Zeroizing::new(
+        std::fs::read_to_string(&key_path)
+            .with_context(|| format!("reading static key {}", key_path.display()))?,
+    );
     let static_secret = SecretKey::from_base64(secret_b64.trim()).context("invalid static key")?;
+    let server_pub = static_secret.public_key();
 
     let mut allowed_admins = Vec::with_capacity(file.identity.admin_pubkeys.len());
     for pk in &file.identity.admin_pubkeys {
@@ -267,7 +260,9 @@ pub fn load(path: &str) -> anyhow::Result<LoadedConfig> {
     let knock = if file.knock.enabled {
         Some(KnockRuntime {
             knock_port: file.knock.knock_port.unwrap_or(listen.port()),
+            tunnel_port: listen.port(),
             psk: psk.clone(),
+            server_pub,
             window_secs: file.knock.window_secs.unwrap_or(30),
             table: file.firewall.table,
             set: file.firewall.set,
@@ -296,11 +291,14 @@ fn load_psk(key: &KeySource) -> anyhow::Result<Psk> {
             .salt
             .as_deref()
             .context("key.source = passphrase requires key.salt")?;
-        let passphrase = read_passphrase(key.passphrase_env.as_deref())?;
+        let passphrase = common::read_passphrase(
+            "hyperion server passphrase: ",
+            key.passphrase_env.as_deref(),
+        )?;
         return Psk::from_passphrase(passphrase.as_bytes(), salt.as_bytes())
             .context("deriving PSK from passphrase");
     }
-    let b64 = match key.source.as_str() {
+    let b64 = Zeroizing::new(match key.source.as_str() {
         "env" => {
             let var = key
                 .env_var
@@ -309,26 +307,19 @@ fn load_psk(key: &KeySource) -> anyhow::Result<Psk> {
             std::env::var(var).with_context(|| format!("env var {var} not set"))?
         }
         "file" => {
-            let path = key
-                .file
-                .as_deref()
-                .context("key.source = file requires key.file")?;
-            std::fs::read_to_string(path).with_context(|| format!("reading psk file {path}"))?
+            let path = common::expand_home(
+                key.file
+                    .as_deref()
+                    .context("key.source = file requires key.file")?,
+            );
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading psk file {}", path.display()))?
         }
         "value" => key
             .value
             .clone()
             .context("key.source = value requires key.value")?,
         other => bail!("unknown key.source: {other}"),
-    };
+    });
     Psk::from_base64(b64.trim()).context("invalid PSK")
-}
-
-fn read_passphrase(passphrase_env: Option<&str>) -> anyhow::Result<String> {
-    if let Some(var) = passphrase_env {
-        if let Ok(val) = std::env::var(var) {
-            return Ok(val);
-        }
-    }
-    rpassword::prompt_password("hyperion server passphrase: ").context("reading passphrase")
 }

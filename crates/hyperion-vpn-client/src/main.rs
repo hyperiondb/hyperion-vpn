@@ -5,10 +5,11 @@ mod routes;
 #[cfg(feature = "tun")]
 mod tunmode;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
+use hyperion_vpn_cli_common as common;
 use hyperion_vpn_core::client::{build_pool, dial, run_forward};
 use hyperion_vpn_core::keys::Keypair;
 use tokio::net::TcpListener;
@@ -69,7 +70,7 @@ enum Command {
     Run {
         #[arg(short, long)]
         config: Option<String>,
-        #[arg(short = 'L', long = "forward", value_name = "LPORT:SERVER:RHOST:RPORT")]
+        #[arg(short = 'L', long = "forward", value_name = "LPORT:SERVER:RPORT")]
         forwards: Vec<String>,
     },
     #[command(about = "Generate an admin keypair")]
@@ -218,10 +219,13 @@ async fn run(config_path: &str, extra_forwards: Vec<String>) -> anyhow::Result<(
     let connect_timeout = std::time::Duration::from_secs(10);
     let mut pools = std::collections::HashMap::new();
     for (name, entry) in cfg.servers {
-        let pool = build_pool(entry.addr, entry.params, entry.pool_size, connect_timeout)
-            .await
-            .with_context(|| format!("connecting to server {name} at {}", entry.addr))?;
-        tracing::info!(server = %name, addr = %entry.addr, pool = pool.size(), "tunnel up");
+        let addr = entry.addr;
+        let pool = build_pool(addr, entry.params, entry.pool_size);
+        if pool.wait_connected(connect_timeout).await {
+            tracing::info!(server = %name, %addr, pool = pool.size(), "tunnel up");
+        } else {
+            tracing::warn!(server = %name, %addr, "not reachable yet; retrying in background");
+        }
         pools.insert(name, pool);
     }
 
@@ -243,31 +247,12 @@ async fn run(config_path: &str, extra_forwards: Vec<String>) -> anyhow::Result<(
         tasks.push(tokio::spawn(run_forward(listener, pool, fwd.remote_port)));
     }
 
-    shutdown_signal().await;
+    common::shutdown_signal().await;
     tracing::info!("shutdown signal received");
     for t in tasks {
         t.abort();
     }
     Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    {
-        let mut term =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        tokio::select! {
-            _ = ctrl_c => {}
-            _ = term.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        ctrl_c.await;
-    }
 }
 
 async fn doctor(config_path: &str) -> anyhow::Result<()> {
@@ -306,7 +291,7 @@ fn keygen(out: Option<PathBuf>) -> anyhow::Result<()> {
     println!("{}", keypair.public.to_base64());
     match out {
         Some(path) => {
-            write_secret(&path, &keypair.secret.to_base64())?;
+            common::write_secret(&path, &keypair.secret.to_base64())?;
             println!("admin secret key written to {}", path.display());
         }
         None => {
@@ -314,23 +299,6 @@ fn keygen(out: Option<PathBuf>) -> anyhow::Result<()> {
             println!("admin secret key (keep private):");
             println!("{}", keypair.secret.to_base64());
         }
-    }
-    Ok(())
-}
-
-fn write_secret(path: &Path, contents: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    file.write_all(contents.as_bytes())?;
-    file.write_all(b"\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }

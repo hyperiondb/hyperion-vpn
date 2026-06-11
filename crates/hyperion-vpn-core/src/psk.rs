@@ -1,12 +1,13 @@
 use crate::{Error, Result};
 use argon2::Argon2;
 use base64::Engine;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const PSK_LEN: usize = 32;
 pub const MIN_SALT_LEN: usize = 8;
 
-const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 #[derive(Clone)]
 pub struct Psk([u8; PSK_LEN]);
@@ -21,9 +22,10 @@ impl Psk {
     }
 
     pub fn from_base64(s: &str) -> Result<Self> {
-        let raw = B64
-            .decode(s.trim())
-            .map_err(|_| Error::Protocol("invalid base64 psk".into()))?;
+        let raw = Zeroizing::new(
+            B64.decode(s.trim())
+                .map_err(|_| Error::Protocol("invalid base64 psk".into()))?,
+        );
         if raw.len() != PSK_LEN {
             return Err(Error::Protocol("psk must be 32 bytes".into()));
         }

@@ -32,10 +32,11 @@ which is required before production use.
 | Attacker without the PSK | Cannot complete the Noise handshake (psk2) and cannot forge a knock (PSK-derived AEAD key). |
 | Stolen/leaked PSK | Still needs a valid **admin static key** (server allowlists admin pubkeys) to pass the handshake. Egress deny-all caps what a compromised tunnel can reach. |
 | Stolen admin static key | Combined with the PSK, authenticates as the admin — **rotate keys**; this is the crown-jewel compromise. |
-| Replayed knock | Timestamp window + bounded nonce cache reject replays; a replay only re-opens the port for an IP the attacker doesn't control. |
-| Spoofed-source knock | Opens the firewall for a forged IP the attacker cannot receive from; the Noise handshake still gates the tunnel. |
+| Replayed knock | Timestamp window + bounded nonce cache (fails closed at capacity) reject replays on the same server. |
+| Captured knock re-sent to another fleet server | The knock is bound to the target server's static public key (AEAD AAD); every other server rejects it despite the shared PSK. |
+| Spoofed-source knock | Opens the firewall for a forged IP the attacker cannot receive from; the Noise handshake still gates the tunnel. An on-path attacker who suppresses the original can re-deliver it from their own IP within the window — they still face the Noise gate. |
 | Server used as an open proxy / pivot | **Egress allowlist is deny-all by default**, and the server only ever dials its own `127.0.0.1` on the explicitly listed ports — it cannot be told to reach any other host (no LAN/internet pivot by construction). |
-| Resource exhaustion via the wire | Bounded allocations: Noise frame ≤ ~16 KiB (u16 prefix), handshake msg ≤ 4 KiB, `ConnectRequest` is a fixed 2-byte port, knock fixed 44 B, replay cache capped, yamux max-streams + receive-window caps. Parsers are panic-safety tested against random input. |
+| Resource exhaustion via the wire | Bounded allocations: Noise frame ≤ ~16 KiB (u16 prefix), handshake msg ≤ 4 KiB, `ConnectRequest` is a fixed 2-byte port, knock fixed 44 B, replay cache capped, yamux max-streams + receive-window caps. A kernel BPF filter on the sniffer drops everything but knock-port UDP before userspace; per-source-IP cooldown caps `nft` invocations. Parsers are panic-safety tested against random input. |
 
 ## Key framing: SPA is stealth, not authentication
 
@@ -59,8 +60,10 @@ shared PSK). Never rely on the knock alone for security.
   lock themselves out. Document and test on a console-accessible host.
 - **PSK distribution** is out of band and the operator's responsibility.
 - **DoS.** An attacker can still flood the tunnel port with TCP SYNs (dropped by the
-  firewall) or the sniffer with junk UDP (cheap to reject, but unbounded volume).
-  Per-source-IP knock rate-limiting is a TODO.
+  firewall) or the knock port with junk UDP (dropped in-kernel by the BPF filter unless
+  it matches the knock port + size; a matching flood costs one AEAD reject each).
+  Valid-knock floods are bounded by the per-source-IP allow cooldown; per-source
+  connection rate-limiting is a TODO.
 
 ## Operational requirements
 

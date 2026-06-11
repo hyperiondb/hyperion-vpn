@@ -677,14 +677,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hyperion-vpn-cli-common"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "rpassword",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "hyperion-vpn-client"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hyperion-vpn-cli-common",
  "hyperion-vpn-core",
  "ipstack",
- "rpassword",
  "serde",
  "tokio",
  "toml",
@@ -695,16 +705,14 @@ dependencies = [
 
 [[package]]
 name = "hyperion-vpn-core"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64",
- "bytes",
  "chacha20poly1305",
  "getrandom 0.3.4",
  "noise-protocol",
  "noise-rust-crypto",
- "serde",
  "socket2",
  "thiserror",
  "tokio",
@@ -716,13 +724,13 @@ dependencies = [
 
 [[package]]
 name = "hyperion-vpn-server"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hyperion-vpn-cli-common",
  "hyperion-vpn-core",
  "libc",
- "rpassword",
  "serde",
  "tokio",
  "toml",

@@ -23,7 +23,4 @@ ttl_secs = 60
 allow = [22, 5432]
 
 [limits]
-max_conns_per_ip = 8
 handshake_timeout_ms = 3000
-max_streams_per_conn = 256
-knock_rate_per_ip_per_min = 10

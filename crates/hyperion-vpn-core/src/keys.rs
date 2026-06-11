@@ -1,12 +1,13 @@
 use crate::{Error, Result};
 use base64::Engine;
-use noise_protocol::{DH, U8Array};
+use noise_protocol::{U8Array, DH};
 use noise_rust_crypto::X25519;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const KEY_LEN: usize = 32;
 
-const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 #[derive(Clone)]
 pub struct SecretKey([u8; KEY_LEN]);
@@ -26,6 +27,11 @@ impl SecretKey {
 
     pub fn from_base64(s: &str) -> Result<Self> {
         decode_key(s).map(Self)
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        let k = <X25519 as DH>::Key::from_slice(&self.0);
+        PublicKey(X25519::pubkey(&k))
     }
 }
 
@@ -79,9 +85,10 @@ impl Keypair {
 }
 
 fn decode_key(s: &str) -> Result<[u8; KEY_LEN]> {
-    let raw = B64
-        .decode(s.trim())
-        .map_err(|_| Error::Protocol("invalid base64 key".into()))?;
+    let raw = Zeroizing::new(
+        B64.decode(s.trim())
+            .map_err(|_| Error::Protocol("invalid base64 key".into()))?,
+    );
     if raw.len() != KEY_LEN {
         return Err(Error::Protocol("key must be 32 bytes".into()));
     }

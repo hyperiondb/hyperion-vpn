@@ -10,7 +10,8 @@ Like NetBird's "no open ports" property, but **without P2P and without WireGuard
 Single Packet Authorization keeps the server unscannable, and the data path stays direct.
 
 - **Stealth:** Single Packet Authorization (SPA). The firewall default-DROPs everything;
-  an authenticated knock transiently opens the tunnel port to your current IP only.
+  an authenticated knock — bound to that server's identity, so a capture is useless
+  against the rest of the fleet — transiently opens the tunnel port to your current IP only.
 - **Crypto:** Noise `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` via `noise-rust` — per-server
   static X25519 identities, ephemerals for forward secrecy, ChaCha20-Poly1305 AEAD, and a
   shared key (PSK) entered at start. The Noise framework WireGuard is built on, but **not**

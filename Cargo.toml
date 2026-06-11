@@ -2,12 +2,13 @@
 resolver = "2"
 members = [
     "crates/hyperion-vpn-core",
+    "crates/hyperion-vpn-cli-common",
     "crates/hyperion-vpn-server",
     "crates/hyperion-vpn-client",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.96"
 publish = true
@@ -27,7 +28,8 @@ anyhow = "=1.0.102"
 thiserror = "=2.0.18"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
-bytes = "=1.11.1"
+zeroize = "=1.8.2"
+rpassword = "=7.5.4"
 
 [profile.release]
 opt-level = 3

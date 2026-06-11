@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
 use noise_protocol::patterns::noise_ik_psk2;
-use noise_protocol::{CipherState, DH, HandshakeState, HandshakeStateBuilder, U8Array};
+use noise_protocol::{CipherState, HandshakeState, HandshakeStateBuilder, U8Array, DH};
 use noise_rust_crypto::{Blake2s, ChaCha20Poly1305, X25519};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -61,7 +61,9 @@ where
     write_handshake_msg(&mut stream, &msg1).await?;
 
     let msg2 = read_handshake_msg(&mut stream).await?;
-    state.read_message_vec(&msg2).map_err(|_| Error::Handshake)?;
+    state
+        .read_message_vec(&msg2)
+        .map_err(|_| Error::Handshake)?;
 
     if !state.completed() {
         return Err(Error::Handshake);
@@ -92,7 +94,9 @@ where
     state.push_psk(hs.psk.as_bytes());
 
     let msg1 = read_handshake_msg(&mut stream).await?;
-    state.read_message_vec(&msg1).map_err(|_| Error::Handshake)?;
+    state
+        .read_message_vec(&msg1)
+        .map_err(|_| Error::Handshake)?;
 
     let admin = PublicKey::from_bytes(state.get_rs().ok_or(Error::Handshake)?);
     if !hs.allowed_admins.contains(&admin) {

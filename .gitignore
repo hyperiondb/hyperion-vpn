@@ -6,3 +6,4 @@
 *.psk
 hyperion-*.local.toml
 .env
+.claude/

@@ -91,10 +91,17 @@ pub async fn run_managed(cfg: crate::config::LoadedClient) -> anyhow::Result<()>
     for (name, entry) in cfg.servers {
         let vip = IpAddr::V4(entry.virtual_ip);
         let real = entry.addr;
-        let pool = build_pool(real, entry.params, entry.pool_size, connect_timeout)
-            .await
-            .with_context(|| format!("connecting to server {name} at {real}"))?;
-        tracing::info!(server = %name, %real, virtual_ip = %vip, "tunnel up");
+        let pool = build_pool(real, entry.params, entry.pool_size);
+        if pool.wait_connected(connect_timeout).await {
+            tracing::info!(server = %name, %real, virtual_ip = %vip, "tunnel up");
+        } else {
+            tracing::warn!(
+                server = %name,
+                %real,
+                virtual_ip = %vip,
+                "not reachable yet; retrying in background"
+            );
+        }
         routes.insert(vip, pool);
     }
 
@@ -125,10 +132,12 @@ pub async fn run(config_path: &str, tun_addr: &str, prefix: u8, mtu: u16) -> any
     for (name, mut entry) in cfg.servers {
         let ip = entry.addr.ip();
         entry.params.fwmark = Some(DEFAULT_FWMARK);
-        let pool = build_pool(entry.addr, entry.params, entry.pool_size, connect_timeout)
-            .await
-            .with_context(|| format!("connecting to server {name} at {}", entry.addr))?;
-        tracing::info!(server = %name, %ip, "tunnel up; route this IP via the tun device");
+        let pool = build_pool(entry.addr, entry.params, entry.pool_size);
+        if pool.wait_connected(connect_timeout).await {
+            tracing::info!(server = %name, %ip, "tunnel up; route this IP via the tun device");
+        } else {
+            tracing::warn!(server = %name, %ip, "not reachable yet; retrying in background");
+        }
         routes.insert(ip, pool);
     }
 

@@ -47,9 +47,10 @@ admin's current source address, which is exactly what the temporary rule needs.
 
 Hyperion's default data path is a **layer-4 multiplexed port-forwarding tunnel** —
 closer to `ssh -L` with many channels — which needs no TUN device or root on the client
-and keeps the relay a simple byte copy. An **optional L3 TUN mode** (`--features tun`,
-client root) layers a userspace TCP/IP stack on top so you reach the server's real
-`IP:port` transparently; the wire protocol and relay are identical underneath.
+and keeps the relay a simple byte copy. An **L3 TUN mode** (built by default, opt out
+with `--no-default-features`; client root) layers a userspace TCP/IP stack on top so you
+reach the server's real `IP:port` transparently; the wire protocol and relay are
+identical underneath.
 
 ```
   admin host (dynamic IP)                       server (firewall: default DROP,
@@ -103,8 +104,12 @@ TCP socket  (reachable only after a valid knock)
 
 ### Knock authentication
 - Key = HKDF/BLAKE2 over the shared PSK (domain-separated from the tunnel key).
-- Payload sealed with ChaCha20-Poly1305; `{version, timestamp, nonce, tunnel_port}`.
-- Anti-replay: reject stale timestamps (±window) and cache recent nonces.
+- Payload sealed with ChaCha20-Poly1305; `{version, timestamp, nonce, tunnel_port}`,
+  **bound to the target server's static public key** (AEAD associated data) — a knock
+  captured for one server is useless against every other server in the fleet, even
+  though they share the PSK.
+- Anti-replay: reject stale timestamps (±window) and cache recent nonces (the cache
+  fails closed at capacity).
 - Threat framing: surface reduction only — see the note above.
 
 ### Tunnel (the real gate)
@@ -168,8 +173,9 @@ authorizes the source IP, so the whole pool connects within the same window.
 - **Egress allowlist is deny-all by default** (`allow = []`): the server dials only its
   own loopback on the explicitly listed ports (`allow = [22, 5432]`); it never dials any
   other host. A leaked PSK cannot turn the daemon into an open proxy or LAN pivot.
-- Per-source-IP rate limiting on knocks and connections; handshake timeouts; bounded
-  in-flight streams; nonce cache bounded.
+- The knock sniffer attaches a kernel BPF filter (only UDP to the knock port reaches
+  userspace) and rate-limits firewall updates per source IP; handshake timeouts; bounded
+  in-flight streams; nonce cache bounded. Per-source connection rate limiting is a TODO.
 - Privilege model: needs `CAP_NET_RAW` (sniff) + `CAP_NET_ADMIN` (firewall). Acquire
   capabilities, drop the rest; run as a dedicated unprivileged user under a hardened
   `systemd` sandbox.
@@ -193,8 +199,8 @@ authorizes the source IP, so the whole pool connects within the same window.
 
 ## Non-goals
 
-- No layer-3 by default; an **optional** L3 TUN mode exists (client root) but the core
-  is a layer-4 relay — not a full mesh/routing VPN.
+- The core is a layer-4 relay; the L3 TUN mode (default build feature, client root)
+  rides on top of it — not a full mesh/routing VPN.
 - No P2P / NAT traversal — servers have known public IPv4; the admin always initiates.
 - No UDP **data path** (a single UDP knock packet aside). QUIC is out of scope unless
   TCP HoL blocking ever proves intolerable.

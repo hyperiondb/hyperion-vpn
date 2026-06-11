@@ -3,15 +3,19 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{bail, Context};
+use hyperion_vpn_cli_common as common;
+use hyperion_vpn_cli_common::Zeroizing;
 use hyperion_vpn_core::client::{KnockSettings, TunnelParams};
 use hyperion_vpn_core::keys::{Keypair, PublicKey, SecretKey};
 use hyperion_vpn_core::psk::Psk;
+use hyperion_vpn_core::DEFAULT_LISTEN_PORT;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_POOL_SIZE: usize = 2;
 const VIRTUAL_HOST_START: u32 = 10;
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     admin_static_key_file: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -29,6 +33,7 @@ struct FileConfig {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct KeySection {
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,6 +47,7 @@ struct KeySection {
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 struct KnockSection {
     #[serde(default)]
     enabled: bool,
@@ -50,6 +56,7 @@ struct KnockSection {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct TunSection {
     #[serde(default = "default_tun_addr")]
     addr: String,
@@ -82,6 +89,7 @@ fn default_tun_mtu() -> u16 {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ServerSection {
     name: String,
     addr: String,
@@ -97,6 +105,7 @@ struct ServerSection {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ForwardSection {
     local: String,
     server: String,
@@ -167,8 +176,8 @@ fn parse_tun(t: &TunSection) -> anyhow::Result<TunConfig> {
         .addr
         .parse()
         .with_context(|| format!("[tun] invalid addr {}", t.addr))?;
-    if t.prefix > 30 {
-        bail!("[tun] prefix must be <= 30");
+    if t.prefix == 0 || t.prefix > 30 {
+        bail!("[tun] prefix must be between 1 and 30");
     }
     Ok(TunConfig {
         addr,
@@ -178,11 +187,7 @@ fn parse_tun(t: &TunSection) -> anyhow::Result<TunConfig> {
 }
 
 fn assign_virtual_ip(tun: &TunConfig, used: &HashSet<Ipv4Addr>) -> Option<Ipv4Addr> {
-    let mask: u32 = if tun.prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - tun.prefix)
-    };
+    let mask: u32 = u32::MAX << (32 - tun.prefix);
     let base = u32::from(tun.addr) & mask;
     let host_count: u32 = 1u32 << (32 - tun.prefix);
     for h in VIRTUAL_HOST_START..host_count.saturating_sub(1) {
@@ -228,8 +233,11 @@ fn resolve_virtual_ips(
 pub fn load(path: &str) -> anyhow::Result<LoadedClient> {
     let file = read_file(path)?;
 
-    let admin_b64 = std::fs::read_to_string(&file.admin_static_key_file)
-        .with_context(|| format!("reading admin key {}", file.admin_static_key_file))?;
+    let key_path = common::expand_home(&file.admin_static_key_file);
+    let admin_b64 = Zeroizing::new(
+        std::fs::read_to_string(&key_path)
+            .with_context(|| format!("reading admin key {}", key_path.display()))?,
+    );
     let admin_secret = SecretKey::from_base64(admin_b64.trim()).context("invalid admin key")?;
 
     let default_psk = match &file.key {
@@ -341,7 +349,7 @@ pub fn init_config(force: bool) -> anyhow::Result<(String, String, String)> {
     }
 
     let keypair = Keypair::generate();
-    write_secret(&key_path, &keypair.secret.to_base64())?;
+    common::write_secret(&key_path, &keypair.secret.to_base64())?;
 
     let salt = Keypair::generate().public.to_base64();
     let salt: String = salt
@@ -430,34 +438,14 @@ fn normalize_addr(addr: &str) -> String {
     if addr.contains(':') {
         addr.to_string()
     } else {
-        format!("{addr}:8443")
+        format!("{addr}:{DEFAULT_LISTEN_PORT}")
     }
-}
-
-fn write_secret(path: &Path, contents: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
-    file.write_all(contents.as_bytes())?;
-    file.write_all(b"\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
 
 fn resolve_psk(s: &ServerSection, default_psk: &Option<Psk>) -> anyhow::Result<Psk> {
     if let Some(var) = &s.key_env {
-        let b64 = std::env::var(var).with_context(|| format!("env var {var} not set"))?;
+        let b64 =
+            Zeroizing::new(std::env::var(var).with_context(|| format!("env var {var} not set"))?);
         return Psk::from_base64(b64.trim()).context("invalid PSK");
     }
     if let Some(value) = &s.key_value {
@@ -475,11 +463,14 @@ fn resolve_default_psk(key: &KeySection) -> anyhow::Result<Psk> {
             .salt
             .as_deref()
             .context("[key] source = passphrase requires salt")?;
-        let passphrase = read_passphrase(key.passphrase_env.as_deref())?;
+        let passphrase = common::read_passphrase(
+            "hyperion shared passphrase: ",
+            key.passphrase_env.as_deref(),
+        )?;
         return Psk::from_passphrase(passphrase.as_bytes(), salt.as_bytes())
             .context("deriving PSK from passphrase");
     }
-    let b64 = match key.source.as_str() {
+    let b64 = Zeroizing::new(match key.source.as_str() {
         "env" => {
             let var = key
                 .env_var
@@ -492,17 +483,8 @@ fn resolve_default_psk(key: &KeySection) -> anyhow::Result<Psk> {
             .clone()
             .context("[key] source = value requires value")?,
         other => bail!("unknown [key] source: {other}"),
-    };
+    });
     Psk::from_base64(b64.trim()).context("invalid PSK")
-}
-
-fn read_passphrase(passphrase_env: Option<&str>) -> anyhow::Result<String> {
-    if let Some(var) = passphrase_env {
-        if let Ok(val) = std::env::var(var) {
-            return Ok(val);
-        }
-    }
-    rpassword::prompt_password("hyperion shared passphrase: ").context("reading passphrase")
 }
 
 pub fn check_duplicate_locals(forwards: &[ForwardEntry]) -> anyhow::Result<()> {
@@ -539,12 +521,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_config_parses_and_ignores_knock_section() {
+    fn file_config_parses() {
         let toml = r#"
 admin_static_key_file = "admin.key"
 
 [knock]
-transport = "udp"
+enabled = true
 
 [[server]]
 name = "srvA"
@@ -563,6 +545,23 @@ remote_port = 22
         assert_eq!(file.server[0].name, "srvA");
         assert_eq!(file.server[0].pool_size, Some(3));
         assert_eq!(file.forward[0].remote_port, 22);
+    }
+
+    #[test]
+    fn unknown_config_keys_are_rejected() {
+        let toml = r#"
+admin_static_key_file = "admin.key"
+
+[knock]
+transport = "udp"
+"#;
+        assert!(toml::from_str::<FileConfig>(toml).is_err());
+
+        let toml = r#"
+admin_static_key_file = "admin.key"
+pool_sizes = 3
+"#;
+        assert!(toml::from_str::<FileConfig>(toml).is_err());
     }
 
     #[test]

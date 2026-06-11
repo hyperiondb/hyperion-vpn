@@ -6,10 +6,12 @@ mod serve;
 #[cfg(target_os = "linux")]
 mod sniffer;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use hyperion_vpn_cli_common as common;
 use hyperion_vpn_core::keys::Keypair;
+use hyperion_vpn_core::DEFAULT_LISTEN_PORT;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,7 +34,7 @@ enum Command {
         admin_key: String,
         #[arg(long, value_delimiter = ',')]
         allow: Vec<u16>,
-        #[arg(long, default_value = "0.0.0.0:8443")]
+        #[arg(long, default_value_t = format!("0.0.0.0:{DEFAULT_LISTEN_PORT}"))]
         listen: String,
         #[arg(long)]
         force: bool,
@@ -126,20 +128,11 @@ fn init(
     println!("\nnext steps:");
     println!(
         "  1. hyperion-server print-firewall --tunnel-port {} | sudo nft -f -",
-        port_of(listen)
+        common::port_of(listen)
     );
     println!("     (review first — this is default-DROP and can lock you out)");
     println!("  2. hyperion-server up");
     Ok(())
-}
-
-fn port_of(listen: &str) -> String {
-    listen
-        .rsplit(':')
-        .next()
-        .filter(|p| p.parse::<u16>().is_ok())
-        .unwrap_or("8443")
-        .to_string()
 }
 
 fn harden() {
@@ -159,7 +152,7 @@ fn keygen(out: Option<PathBuf>) -> anyhow::Result<()> {
     println!("{}", keypair.public.to_base64());
     match out {
         Some(path) => {
-            write_secret(&path, &keypair.secret.to_base64())?;
+            common::write_secret(&path, &keypair.secret.to_base64())?;
             println!("server secret key written to {}", path.display());
         }
         None => {
@@ -167,23 +160,6 @@ fn keygen(out: Option<PathBuf>) -> anyhow::Result<()> {
             println!("server secret key (keep private):");
             println!("{}", keypair.secret.to_base64());
         }
-    }
-    Ok(())
-}
-
-fn write_secret(path: &Path, contents: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    file.write_all(contents.as_bytes())?;
-    file.write_all(b"\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }

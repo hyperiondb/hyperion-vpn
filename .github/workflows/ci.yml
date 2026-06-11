@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -12,7 +15,6 @@ env:
 
 jobs:
   test:
-    if: contains(github.event.head_commit.message, '[cd]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,14 +25,13 @@ jobs:
       - run: cargo check -p hyperion-vpn-client --no-default-features --locked
 
   deny:
-    if: contains(github.event.head_commit.message, '[cd]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   package:
-    if: contains(github.event.head_commit.message, '[cd]')
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[cd]')
     needs: [test, deny]
     strategy:
       fail-fast: false
