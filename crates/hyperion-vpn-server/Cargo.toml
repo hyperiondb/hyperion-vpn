@@ -1,18 +1,23 @@
 [package]
 name = "hyperion-vpn-server"
+description = "Hyperion VPN server daemon: SPA knock sniffer, nftables gating, and the egress-allowlisted relay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "hyperion-server"
 path = "src/main.rs"
 
 [dependencies]
-hyperion-vpn-core = { path = "../hyperion-vpn-core" }
-hyperion-vpn-cli-common = { path = "../hyperion-vpn-cli-common" }
+hyperion-vpn-core.workspace = true
+hyperion-vpn-cli-common.workspace = true
 tokio.workspace = true
 clap.workspace = true
 serde.workspace = true

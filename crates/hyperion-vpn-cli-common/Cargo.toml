@@ -1,10 +1,15 @@
 [package]
 name = "hyperion-vpn-cli-common"
+description = "Shared CLI plumbing for the Hyperion VPN binaries: config paths, daemon control, and secret handling"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true

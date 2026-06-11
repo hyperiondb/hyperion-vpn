@@ -14,12 +14,14 @@ rust-version = "1.96"
 publish = true
 license = "GPL-3.0-or-later"
 authors = ["Tadas Talaikis <info@nordlet.com>"]
-keywords = []
-categories = []
+keywords = ["vpn", "tunnel", "port-knocking", "noise-protocol", "security"]
+categories = ["network-programming", "cryptography", "authentication", "command-line-utilities"]
 repository = "https://github.com/hyperiondb/hyperion-vpn"
 readme = "README.md"
 
 [workspace.dependencies]
+hyperion-vpn-core = { path = "crates/hyperion-vpn-core", version = "=0.2.0" }
+hyperion-vpn-cli-common = { path = "crates/hyperion-vpn-cli-common", version = "=0.2.0" }
 tokio = { version = "=1.52.3", features = ["full"] }
 clap = { version = "=4.5.60", features = ["derive", "env"] }
 serde = { version = "=1.0.228", features = ["derive"] }
