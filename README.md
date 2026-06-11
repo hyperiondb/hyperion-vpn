@@ -9,6 +9,8 @@ service on the server — including SSH on 22 — across **many** servers at onc
 Like NetBird's "no open ports" property, but **without P2P and without WireGuard**:
 Single Packet Authorization keeps the server unscannable, and the data path stays direct.
 
+Status: **in progress**
+
 - **Stealth:** Single Packet Authorization (SPA). The firewall default-DROPs everything;
   an authenticated knock — bound to that server's identity, so a capture is useless
   against the rest of the fleet — transiently opens the tunnel port to your current IP only.
