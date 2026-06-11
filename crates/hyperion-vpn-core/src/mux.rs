@@ -158,7 +158,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut s = acceptor.accept().await.unwrap();
             let req = read_connect_request(&mut s).await.unwrap();
-            assert_eq!(req, ConnectRequest { host: "127.0.0.1".into(), port: 22 });
+            assert_eq!(req, ConnectRequest { port: 22 });
             write_connect_response(&mut s, ConnectResponse::Ok).await.unwrap();
             let mut buf = [0u8; 5];
             s.read_exact(&mut buf).await.unwrap();
@@ -167,7 +167,7 @@ mod tests {
         });
 
         let mut s = control.open().await.unwrap();
-        write_connect_request(&mut s, &ConnectRequest { host: "127.0.0.1".into(), port: 22 })
+        write_connect_request(&mut s, &ConnectRequest { port: 22 })
             .await
             .unwrap();
         let resp = read_connect_response(&mut s).await.unwrap();

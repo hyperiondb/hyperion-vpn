@@ -11,16 +11,16 @@ admin_pubkeys = [
 ]
 
 [knock]
-listen_mode = "af_packet"
-replay_window_secs = 30
-open_ttl_secs = 30
+enabled = true
+window_secs = 30
 
 [firewall]
-backend = "nftables"
 table = "hyperion"
+set = "knock_allow"
+ttl_secs = 60
 
 [egress]
-allow = ["127.0.0.1:22", "127.0.0.1:5432"]
+allow = [22, 5432]
 
 [limits]
 max_conns_per_ip = 8

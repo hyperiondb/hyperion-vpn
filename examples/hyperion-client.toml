@@ -1,7 +1,7 @@
 admin_static_key_file = "~/.config/hyperion/admin.key"
 
 [knock]
-transport = "udp"
+enabled = true
 
 [[server]]
 name = "srvA"
@@ -20,17 +20,14 @@ pool_size = 2
 [[forward]]
 local = "127.0.0.1:2201"
 server = "srvA"
-remote_host = "127.0.0.1"
 remote_port = 22
 
 [[forward]]
 local = "127.0.0.1:5432"
 server = "srvA"
-remote_host = "127.0.0.1"
 remote_port = 5432
 
 [[forward]]
 local = "127.0.0.1:2202"
 server = "srvB"
-remote_host = "127.0.0.1"
 remote_port = 22

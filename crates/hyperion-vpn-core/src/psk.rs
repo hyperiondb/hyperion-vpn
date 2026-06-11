@@ -49,3 +49,22 @@ impl Drop for Psk {
         self.0.zeroize();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passphrase_is_deterministic_and_salt_sensitive() {
+        let a = Psk::from_passphrase(b"correct horse battery", b"saltsalt").unwrap();
+        let b = Psk::from_passphrase(b"correct horse battery", b"saltsalt").unwrap();
+        let c = Psk::from_passphrase(b"correct horse battery", b"different-salt").unwrap();
+        assert_eq!(a.as_bytes(), b.as_bytes());
+        assert_ne!(a.as_bytes(), c.as_bytes());
+    }
+
+    #[test]
+    fn passphrase_rejects_short_salt() {
+        assert!(Psk::from_passphrase(b"pw", b"short").is_err());
+    }
+}

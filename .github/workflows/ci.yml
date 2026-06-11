@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    if: contains(github.event.head_commit.message, '[cd]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace --locked
+      - run: cargo check -p hyperion-vpn-client --no-default-features --locked
+
+  deny:
+    if: contains(github.event.head_commit.message, '[cd]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  package:
+    if: contains(github.event.head_commit.message, '[cd]')
+    needs: [test, deny]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+            build: --workspace
+            artifacts: |
+              target/x86_64-unknown-linux-gnu/release/hyperion-server
+              target/x86_64-unknown-linux-gnu/release/hyperion-client
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64-client
+            build: --package hyperion-vpn-client
+            artifacts: |
+              target/x86_64-pc-windows-msvc/release/hyperion-client.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.build }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hyperion-vpn-${{ matrix.name }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error

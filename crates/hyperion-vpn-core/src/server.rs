@@ -13,61 +13,24 @@ use crate::protocol::{
 use crate::psk::Psk;
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, Debug)]
-enum PortPattern {
-    Any,
-    Exact(u16),
-}
-
-#[derive(Clone, Debug)]
-struct EgressRule {
-    host: String,
-    port: PortPattern,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Egress {
-    rules: Vec<EgressRule>,
+    ports: std::collections::HashSet<u16>,
 }
 
 impl Egress {
     pub fn deny_all() -> Self {
-        Self { rules: Vec::new() }
+        Self::default()
     }
 
-    pub fn parse(entries: &[String]) -> Result<Self> {
-        let mut rules = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let (host, port) = entry
-                .rsplit_once(':')
-                .ok_or_else(|| Error::Protocol(format!("egress entry missing port: {entry}")))?;
-            if host.is_empty() {
-                return Err(Error::Protocol(format!("egress entry empty host: {entry}")));
-            }
-            let port = if port == "*" {
-                PortPattern::Any
-            } else {
-                PortPattern::Exact(
-                    port.parse()
-                        .map_err(|_| Error::Protocol(format!("egress entry bad port: {entry}")))?,
-                )
-            };
-            rules.push(EgressRule {
-                host: host.to_string(),
-                port,
-            });
+    pub fn new(ports: impl IntoIterator<Item = u16>) -> Self {
+        Self {
+            ports: ports.into_iter().collect(),
         }
-        Ok(Self { rules })
     }
 
-    pub fn permits(&self, host: &str, port: u16) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.host == host
-                && match rule.port {
-                    PortPattern::Any => true,
-                    PortPattern::Exact(p) => p == port,
-                }
-        })
+    pub fn permits(&self, port: u16) -> bool {
+        self.ports.contains(&port)
     }
 }
 
@@ -94,31 +57,39 @@ where
     tracing::debug!(admin = %admin.to_base64(), "tunnel established");
 
     let (mut acceptor, driver) = mux::server(noise, mux::config());
-    let driver = tokio::spawn(driver);
 
-    while let Some(stream) = acceptor.accept().await {
-        let config = config.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_stream(stream, config).await {
-                tracing::debug!(error = %e, "stream handler ended");
+    let accept_loop = async {
+        while let Some(stream) = acceptor.accept().await {
+            let config = config.clone();
+            tokio::spawn(async move {
+                if let Err(e) = handle_stream(stream, config).await {
+                    tracing::debug!(error = %e, "stream handler ended");
+                }
+            });
+        }
+    };
+
+    tokio::select! {
+        res = driver => {
+            if let Err(e) = res {
+                tracing::debug!(error = %e, "tunnel driver ended");
             }
-        });
+        }
+        _ = accept_loop => {}
     }
-
-    driver.abort();
     Ok(())
 }
 
 async fn handle_stream(mut stream: MuxStream, config: Arc<ServerConfig>) -> Result<()> {
-    let ConnectRequest { host, port } = read_connect_request(&mut stream).await?;
+    let ConnectRequest { port } = read_connect_request(&mut stream).await?;
 
-    if !config.egress.permits(&host, port) {
-        tracing::info!(%host, port, "egress denied");
+    if !config.egress.permits(port) {
+        tracing::info!(port, "egress denied");
         write_connect_response(&mut stream, ConnectResponse::Denied).await?;
         return Ok(());
     }
 
-    match TcpStream::connect((host.as_str(), port)).await {
+    match TcpStream::connect(("127.0.0.1", port)).await {
         Ok(mut target) => {
             let _ = target.set_nodelay(true);
             write_connect_response(&mut stream, ConnectResponse::Ok).await?;
@@ -126,7 +97,7 @@ async fn handle_stream(mut stream: MuxStream, config: Arc<ServerConfig>) -> Resu
             Ok(())
         }
         Err(_) => {
-            tracing::debug!(%host, port, "target unreachable");
+            tracing::debug!(port, "target unreachable");
             write_connect_response(&mut stream, ConnectResponse::Unreachable).await?;
             Ok(())
         }
@@ -193,12 +164,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_target_relays_bytes() {
         let port = spawn_echo().await;
-        let egress = Egress::parse(&[format!("127.0.0.1:{port}")]).unwrap();
-        let (resp, mut stream) = open_request(
-            egress,
-            ConnectRequest { host: "127.0.0.1".into(), port },
-        )
-        .await;
+        let (resp, mut stream) = open_request(Egress::new([port]), ConnectRequest { port }).await;
         assert_eq!(resp, ConnectResponse::Ok);
 
         stream.write_all(b"through-the-tunnel").await.unwrap();
@@ -211,11 +177,7 @@ mod tests {
     #[tokio::test]
     async fn unlisted_target_is_denied() {
         let port = spawn_echo().await;
-        let (resp, _stream) = open_request(
-            Egress::deny_all(),
-            ConnectRequest { host: "127.0.0.1".into(), port },
-        )
-        .await;
+        let (resp, _stream) = open_request(Egress::deny_all(), ConnectRequest { port }).await;
         assert_eq!(resp, ConnectResponse::Denied);
     }
 
@@ -225,22 +187,17 @@ mod tests {
             let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
         };
-        let egress = Egress::parse(&[format!("127.0.0.1:{dead}")]).unwrap();
-        let (resp, _stream) = open_request(
-            egress,
-            ConnectRequest { host: "127.0.0.1".into(), port: dead },
-        )
-        .await;
+        let (resp, _stream) =
+            open_request(Egress::new([dead]), ConnectRequest { port: dead }).await;
         assert_eq!(resp, ConnectResponse::Unreachable);
     }
 
     #[test]
     fn egress_matching() {
-        let e = Egress::parse(&["127.0.0.1:22".into(), "10.0.0.5:*".into()]).unwrap();
-        assert!(e.permits("127.0.0.1", 22));
-        assert!(!e.permits("127.0.0.1", 23));
-        assert!(e.permits("10.0.0.5", 9999));
-        assert!(!e.permits("10.0.0.6", 22));
-        assert!(!Egress::deny_all().permits("127.0.0.1", 22));
+        let e = Egress::new([22, 5432]);
+        assert!(e.permits(22));
+        assert!(!e.permits(23));
+        assert!(e.permits(5432));
+        assert!(!Egress::deny_all().permits(22));
     }
 }

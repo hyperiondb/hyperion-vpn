@@ -12,10 +12,13 @@ thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
 tokio.workspace = true
+socket2 = { version = "=0.6.4", features = ["all"] }
 noise-protocol = "=0.2.1"
 noise-rust-crypto = "=0.6.2"
+chacha20poly1305 = "=0.10.1"
 zeroize = "=1.8.2"
 argon2 = "=0.5.3"
 base64 = "=0.22.1"
+getrandom = "=0.3.4"
 yamux = "=0.13.10"
 tokio-util = { version = "=0.7.18", features = ["compat"] }

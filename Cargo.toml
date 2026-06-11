@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 publish = true
@@ -20,7 +20,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 tokio = { version = "=1.52.3", features = ["full"] }
-clap = { version = "=4.6.1", features = ["derive", "env"] }
+clap = { version = "=4.5.60", features = ["derive", "env"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 toml = "=0.8.23"
 anyhow = "=1.0.102"

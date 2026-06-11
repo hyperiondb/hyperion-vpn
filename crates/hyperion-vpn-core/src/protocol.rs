@@ -2,11 +2,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{Error, Result};
 
-pub const MAX_HOST_LEN: usize = 255;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectRequest {
-    pub host: String,
     pub port: u16,
 }
 
@@ -40,15 +37,7 @@ pub async fn write_connect_request<W>(w: &mut W, req: &ConnectRequest) -> Result
 where
     W: AsyncWrite + Unpin,
 {
-    let host = req.host.as_bytes();
-    if host.is_empty() || host.len() > MAX_HOST_LEN {
-        return Err(Error::Protocol("host length out of range".into()));
-    }
-    let mut buf = Vec::with_capacity(1 + host.len() + 2);
-    buf.push(host.len() as u8);
-    buf.extend_from_slice(host);
-    buf.extend_from_slice(&req.port.to_be_bytes());
-    w.write_all(&buf).await?;
+    w.write_all(&req.port.to_be_bytes()).await?;
     w.flush().await?;
     Ok(())
 }
@@ -57,19 +46,9 @@ pub async fn read_connect_request<R>(r: &mut R) -> Result<ConnectRequest>
 where
     R: AsyncRead + Unpin,
 {
-    let mut len = [0u8; 1];
-    r.read_exact(&mut len).await?;
-    let len = len[0] as usize;
-    if len == 0 {
-        return Err(Error::Protocol("empty host".into()));
-    }
-    let mut host = vec![0u8; len];
-    r.read_exact(&mut host).await?;
     let mut port = [0u8; 2];
     r.read_exact(&mut port).await?;
-    let host = String::from_utf8(host).map_err(|_| Error::Protocol("host not utf-8".into()))?;
     Ok(ConnectRequest {
-        host,
         port: u16::from_be_bytes(port),
     })
 }
@@ -90,4 +69,29 @@ where
     let mut code = [0u8; 1];
     r.read_exact(&mut code).await?;
     ConnectResponse::from_code(code[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_request_roundtrips() {
+        let req = ConnectRequest { port: 22 };
+        let mut buf = Vec::new();
+        write_connect_request(&mut buf, &req).await.unwrap();
+        let parsed = read_connect_request(&mut buf.as_slice()).await.unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[tokio::test]
+    async fn read_connect_request_never_panics_or_hangs() {
+        let mut buf = [0u8; 96];
+        for _ in 0..2000 {
+            getrandom::fill(&mut buf).unwrap();
+            let len = buf[0] as usize % buf.len();
+            let mut slice = &buf[..len];
+            let _ = read_connect_request(&mut slice).await;
+        }
+    }
 }

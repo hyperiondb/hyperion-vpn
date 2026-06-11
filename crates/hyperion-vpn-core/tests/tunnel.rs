@@ -33,7 +33,7 @@ async fn full_stack_noise_plus_yamux_forward() {
 
         let mut stream = acceptor.accept().await.unwrap();
         let req = read_connect_request(&mut stream).await.unwrap();
-        assert_eq!(req, ConnectRequest { host: "127.0.0.1".into(), port: 22 });
+        assert_eq!(req, ConnectRequest { port: 22 });
         write_connect_response(&mut stream, ConnectResponse::Ok)
             .await
             .unwrap();
@@ -55,12 +55,9 @@ async fn full_stack_noise_plus_yamux_forward() {
         tokio::spawn(driver);
 
         let mut stream = control.open().await.unwrap();
-        write_connect_request(
-            &mut stream,
-            &ConnectRequest { host: "127.0.0.1".into(), port: 22 },
-        )
-        .await
-        .unwrap();
+        write_connect_request(&mut stream, &ConnectRequest { port: 22 })
+            .await
+            .unwrap();
         let resp = read_connect_response(&mut stream).await.unwrap();
         assert_eq!(resp, ConnectResponse::Ok);
 

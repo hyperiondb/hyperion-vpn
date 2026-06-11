@@ -22,11 +22,6 @@ Top priorities, in order: **security → reliability → speed.**
 
 ---
 
-## Phase 0 — Project setup
-- [ ] `rust-toolchain.toml` pinning the toolchain + `rustfmt.toml` + `clippy` in CI.
-- [ ] `deny.toml` (`cargo-deny`) for license + advisory + duplicate-dep gates.
-- [ ] CI: fmt, clippy `-D warnings`, test, `cargo-audit`, Linux + Windows + musl matrix.
-
 ## Phase 1 — Secure tunnel (Noise IKpsk2)  ← cross-platform, build first
 - [ ] Key input wiring: no-echo passphrase prompt / `--key-file` / `HYPERION_PSK` env
       (core derivation done; CLI/config wiring lands with Phase 3/4 config).
@@ -41,48 +36,46 @@ Top priorities, in order: **security → reliability → speed.**
 - [ ] Per-source-IP connection rate limit + max in-flight streams per conn
       (handshake timeout done; rate limit belongs with the Phase 5 SPA gate).
 - [ ] Graceful drain of in-flight streams on shutdown (currently stops accepting only).
-- [ ] Passphrase/Argon2id PSK source in config (currently base64 via env/file/value).
-- [ ] Egress: IPv6 literals + CIDR host matching (currently exact host string + port).
 
-## Phase 4 — Admin client (forwards, multi-server, pool)
-- [ ] `status` command/endpoint: per-server state, pool size, live stream counts,
-      throughput (deferred to Phase 9 observability).
-- [ ] Live two-binary smoke in CI (in-process end-to-end test covers the data path;
-      blocked locally by host AV behavioral block on the process orchestration).
+## Phase 4b — L3 TUN mode (default feature; transparent real-IP)
+Done (compiles Linux cross-check + Windows/Wintun): `client tun` (TUN + `ipstack`,
+dest-IP→server, dest-port→remote, egress-checked); **`SO_MARK` bypass on dial sockets**
+(Linux) + **`print-routes`** emitting `ip route`/`ip rule` (tested); zero `[[forward]]`
+config needed (just servers). Remaining:
+- [ ] **Runtime verification on Linux + root** (knock + route + browse real IP).
+- [ ] Windows socket-bypass (no `SO_MARK`; bind-to-interface / metric) — Linux-only now.
+- [ ] UDP support (currently TCP-only; UDP streams dropped).
+- [ ] `[tun]` config section (addr/prefix/mtu/mark) instead of only CLI flags.
 
 ## Phase 5 — Single Packet Authorization (Linux server gate)
-- [ ] Knock packet: `{version, timestamp, nonce, tunnel_port}` sealed with a
-      PSK-derived key (HKDF/BLAKE2, domain-separated) + ChaCha20-Poly1305.
-- [ ] Client sender: single UDP datagram by default (no privileges); optional single
-      crafted TCP packet for all-TCP environments.
-- [ ] Server sniffer: passive capture via **AF_PACKET** (fallback **NFLOG** /
-      `libnetfilter_log`); no bound port; bounded parse + per-IP rate limit.
-- [ ] Anti-replay: reject stale timestamps (±window); bounded nonce cache.
-- [ ] Firewall driver: **nftables** (preferred) / iptables fallback. Standing rules:
-      default DROP + `ct state established,related accept`. On valid knock: add
-      `allow <src_ip> -> tcp/<tunnel_port>` for NEW conns with short TTL; auto-expire.
-- [ ] Idempotent rule add/remove; reconcile orphaned rules on startup.
-- [ ] Privilege model: acquire `CAP_NET_RAW` + `CAP_NET_ADMIN`, drop the rest, run as
-      dedicated unprivileged user.
-- [ ] Tests (Linux/WSL2/VM): scanner sees all-filtered; valid knock opens for src IP
-      only; replayed/stale/forged knock rejected; rule expires; established survives.
+Implemented + cross-checked for Linux (`cargo check --target x86_64-unknown-linux-gnu`);
+knock crypto / packet parse / nft arg-building unit-tested cross-platform. Remaining:
+- [ ] **Runtime verification on a real Linux host** (root): `nft -f` the base ruleset
+      (`hyperion-server print-firewall`), enable `[knock]`, confirm: scanner sees
+      all-filtered, a valid knock opens tcp/<port> for the source IP only, the set
+      element expires, established conns survive, replay/stale/forged knocks are dropped.
+- [ ] Privilege model: acquire `CAP_NET_RAW` + `CAP_NET_ADMIN`, drop the rest, run as a
+      dedicated unprivileged user (+ systemd `AmbientCapabilities`).
+- [ ] Per-source-IP knock rate limit; startup reconcile of stale set elements.
+- [ ] Optional: single crafted-TCP-packet knock variant; NFLOG/iptables fallbacks.
 
 ## Phase 6 — Reliability
-- [ ] Per-server supervisor: on drop, **re-knock then reconnect**, exp backoff + jitter.
-- [ ] Keepalive ping/pong; keeps conntrack warm; declare dead on miss → reconnect.
-- [ ] Admin IP change mid-session → clean re-knock from the new IP.
-- [ ] Local listeners survive tunnel flaps; new conns queue/fail fast cleanly.
-- [ ] End-to-end backpressure via yamux flow control; bounded channels; await timeouts.
-- [ ] Chaos test: kill/restart server mid-transfer, drop packets, flip client IP.
+Done: supervised self-healing pool (re-knock + backoff/jitter on drop), TCP keepalive
+(conntrack-warm + dead-peer detection), IP-change auto-reconnect, local listeners
+survive flaps + open() grace, owned mux driver (no task leak), server-restart reconnect
+test. Remaining:
+- [ ] App-level keepalive ping/pong for faster liveness than TCP keepalive's idle timer.
+- [ ] Audit every await for an explicit timeout (handshake + connect covered).
+- [ ] Extended chaos on Linux: `netem` packet loss + client-IP flip mid-transfer.
 
 ## Phase 7 — Security hardening
-- [ ] Threat model doc (assets, adversaries, trust boundaries, abuse cases).
-- [ ] `systemd` sandbox unit (NoNewPrivileges, ProtectSystem=strict, capability set).
-- [ ] Memory hygiene: `zeroize` all key material; disable core dumps for the daemon.
-- [ ] Bound every wire allocation (frame, header, streams, nonce cache).
-- [ ] `cargo audit` / `cargo deny` clean; pin transitive crypto deps.
-- [ ] Fuzz wire parsers (`cargo fuzz`: framing, ConnectRequest, knock packet).
-- [ ] External crypto/protocol review before any production use.
+Done: `THREAT_MODEL.md`; `zeroize` on keys/PSK + core-dump disable (Linux); bounded wire
+allocations + panic-safety tests on every parser (knock/packet/ConnectRequest/frame);
+`deny.toml` + CI (`cargo-deny` advisories/licenses/bans/sources, fmt, clippy `-D warnings`).
+- [ ] `cargo fuzz` (libFuzzer) targets for deeper coverage (panic-safety tests cover
+      basics; needs Linux + nightly).
+- [ ] `systemd` sandbox unit + `CAP_NET_RAW`/`CAP_NET_ADMIN` ambient caps, drop the rest.
+- [ ] **External crypto/protocol review before any production use.**
 
 ## Phase 8 — Performance
 - [ ] `TCP_NODELAY` everywhere; tune SO_SNDBUF/SO_RCVBUF; tune yamux window + pool size.
@@ -91,17 +84,6 @@ Top priorities, in order: **security → reliability → speed.**
 - [ ] Benchmarks: single-stream throughput, many-stream fan-out, handshake/sec, knock
       latency, overhead vs raw TCP; under 0/1/5% simulated loss.
 - [ ] Flamegraph the hot path; ensure crypto + copy dominate.
-
-## Phase 9 — Observability
-- [ ] Structured `tracing` spans per knock/tunnel/stream; redact secrets.
-- [ ] Optional Prometheus metrics (knocks, conns, streams, bytes, reconnects, fails).
-- [ ] `--log-format json`; sane defaults; rate-limited error logs.
-
-## Phase 10 — Config & UX
-- [ ] Finalize TOML schema for both binaries + `--print-config-schema`.
-- [ ] `hyperion keygen` (static keypairs) + passphrase/PSK docs.
-- [ ] Config validation with clear errors (empty egress, dup local ports, bad keys).
-- [ ] `hyperion doctor`: knock + handshake only, no forward (connectivity check).
 
 ## Phase 11 — Testing
 - [ ] Unit tests per module (knock, crypto, framing, mux, egress, config).
@@ -114,14 +96,7 @@ Top priorities, in order: **security → reliability → speed.**
 ## Phase 12 — Packaging & deployment
 - [ ] Static musl server build (`x86_64`, `aarch64`); cross-platform client builds.
 - [ ] Hardened `systemd` unit + sample nftables base ruleset for the server.
-- [ ] Minimal container image for the server (caps, net namespace notes).
 - [ ] Signed releases + checksums; reproducible builds.
-
-## Phase 13 — Docs
-- [ ] README quickstart (keygen → server + nftables base → client → knock → SSH through).
-- [ ] Security model & ops (key rotation, egress hygiene, knock replay window).
-- [ ] Troubleshooting (firewall reconcile, MTU/HoL, reconnect storms, IP changes).
-- [ ] Write up the SPA stealth-not-auth framing + the TCP-over-TCP trade-off plainly.
 
 ---
 

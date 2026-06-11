@@ -45,10 +45,11 @@ admin's current source address, which is exactly what the temporary rule needs.
 
 ## Shape of the solution
 
-Hyperion is **not** a layer-3 packet VPN (no TUN device, no IP routing). It is a
-**layer-4 multiplexed port-forwarding tunnel** — closer to `ssh -L` with many
-channels. This avoids kernel/TUN privileges on the data path and keeps it a simple
-byte relay.
+Hyperion's default data path is a **layer-4 multiplexed port-forwarding tunnel** —
+closer to `ssh -L` with many channels — which needs no TUN device or root on the client
+and keeps the relay a simple byte copy. An **optional L3 TUN mode** (`--features tun`,
+client root) layers a userspace TCP/IP stack on top so you reach the server's real
+`IP:port` transparently; the wire protocol and relay are identical underneath.
 
 ```
   admin host (dynamic IP)                       server (firewall: default DROP,
@@ -81,9 +82,9 @@ byte relay.
 3. **Tunnel.** Client opens the TCP connection(s) and runs the Noise `IKpsk2`
    handshake (server static key known to client; client static key + PSK authenticate
    the admin). On success, yamux runs over the encrypted transport.
-4. **Forward.** Each local accept → one yamux stream carrying a `ConnectRequest`; the
-   server checks the **egress allowlist** (deny-all by default), dials the target, and
-   relays bytes with `copy_bidirectional`.
+4. **Forward.** Each local accept → one yamux stream carrying a `ConnectRequest` (just
+   the destination port); the server checks the **egress allowlist** (deny-all by
+   default), dials its own `127.0.0.1:<port>`, and relays with `copy_bidirectional`.
 5. **Teardown / reconnect.** TTL removes the NEW-connection rule; conntrack keeps the
    live tunnel. If the tunnel drops (or the admin's IP changes), the client re-knocks
    and reconnects.
@@ -94,7 +95,7 @@ byte relay.
 TCP socket  (reachable only after a valid knock)
   └─ Noise IKpsk2 secure transport    (X25519 static+ephemeral, ChaCha20-Poly1305)
        └─ yamux multiplexer           (logical streams, flow control)
-            └─ per-stream header       (ConnectRequest{host,port} / ConnectResponse)
+            └─ per-stream header       (ConnectRequest{port} / ConnectResponse)
                  └─ raw relayed bytes   (e.g. an SSH session)
 ```
 
@@ -164,9 +165,9 @@ authorizes the source IP, so the whole pool connects within the same window.
 
 - No reachable port until a valid knock; everything else silently dropped at the
   firewall → inert to scanners.
-- **Egress allowlist is deny-all by default** (`allow = []`): the server dials nothing
-  until the operator enumerates each `host:port`/range. A leaked PSK cannot turn the
-  daemon into an open proxy or LAN pivot.
+- **Egress allowlist is deny-all by default** (`allow = []`): the server dials only its
+  own loopback on the explicitly listed ports (`allow = [22, 5432]`); it never dials any
+  other host. A leaked PSK cannot turn the daemon into an open proxy or LAN pivot.
 - Per-source-IP rate limiting on knocks and connections; handshake timeouts; bounded
   in-flight streams; nonce cache bounded.
 - Privilege model: needs `CAP_NET_RAW` (sniff) + `CAP_NET_ADMIN` (firewall). Acquire
@@ -192,7 +193,8 @@ authorizes the source IP, so the whole pool connects within the same window.
 
 ## Non-goals
 
-- No layer-3 / full-network VPN, no TUN device, no IP routing.
+- No layer-3 by default; an **optional** L3 TUN mode exists (client root) but the core
+  is a layer-4 relay — not a full mesh/routing VPN.
 - No P2P / NAT traversal — servers have known public IPv4; the admin always initiates.
 - No UDP **data path** (a single UDP knock packet aside). QUIC is out of scope unless
   TCP HoL blocking ever proves intolerable.
