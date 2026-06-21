@@ -7,3 +7,4 @@
 hyperion-*.local.toml
 .env
 .claude/
+.codegraph/
