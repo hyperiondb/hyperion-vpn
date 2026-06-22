@@ -17,7 +17,7 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Unlicense",
-    "GPL-3.0-or-later",
+    "AGPL-3.0-only",
 ]
 
 [bans]
